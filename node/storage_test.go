@@ -296,3 +296,37 @@ func SizeTest(t *testing.T) {
 		t.Fatal("should return an error when no persistence configured")
 	}
 }
+
+func TestStats(t *testing.T) {
+	s := initStorage(t, true, true)
+	// Create new valid peer.ID
+	p, err := peer.Decode("12D3KooWKRyzVWW6ChFjQjK4miCty85Niy48tpPV95XdKu1BcvMA")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cids, err := utils.RandomCids(15)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	entry1 := store.MakeIndexEntry(p, protocolID, cids[0].Bytes())
+
+	// single := cids[1]
+
+	// Put a batch of CIDs
+	t.Logf("Put/Get a batch of CIDs in storage")
+	err = s.PutMany(cids[1:], entry1)
+	if err != nil {
+		t.Fatal("Error putting batch of cids: ", err)
+	}
+	_, _, err = s.Get(cids[2])
+	if err != nil {
+		t.Fatal(err)
+	}
+	st := s.Stats()
+	if st.CacheMiss != 1 {
+		t.Fatal("Should be a cache miss")
+	}
+
+}

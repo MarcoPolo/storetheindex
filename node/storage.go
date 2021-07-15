@@ -2,6 +2,7 @@ package node
 
 import (
 	"fmt"
+	"sync"
 
 	"github.com/filecoin-project/storetheindex/store"
 	"github.com/ipfs/go-cid"
@@ -14,11 +15,34 @@ var _ store.Storage = &nodeStorage{}
 type nodeStorage struct {
 	primary    store.Storage
 	persistent store.PersistentStorage
+	stats      *NodeStats
+}
+
+type NodeStats struct {
+	lk        sync.RWMutex
+	CacheMiss uint64
+	CacheHit  uint64
+	FullMiss  uint64
+}
+
+func (ns *nodeStorage) Stats() *NodeStats {
+	ns.stats.lk.RLock()
+	defer ns.stats.lk.RUnlock()
+	return ns.stats
 }
 
 // NewStorage creates new nodeStorage from a primary and persistent storages
 func NewStorage(primary store.Storage, persistent store.PersistentStorage) *nodeStorage {
-	return &nodeStorage{primary, persistent}
+	stats := &NodeStats{}
+	return &nodeStorage{primary, persistent, stats}
+}
+
+func (st *NodeStats) add(chmiss, chhit, fullmiss uint64) {
+	st.lk.Lock()
+	defer st.lk.Unlock()
+	st.CacheMiss += chmiss
+	st.CacheHit += chhit
+	st.FullMiss += fullmiss
 }
 
 // Get retrieves IndexEntries for a CID
@@ -26,6 +50,9 @@ func (ns *nodeStorage) Get(c cid.Cid) ([]store.IndexEntry, bool, error) {
 	if ns.primary != nil {
 		// Check if CID in primary storage
 		v, found, err := ns.primary.Get(c)
+		if found {
+			ns.stats.add(1, 0, 0)
+		}
 		if err != nil {
 			return nil, false, err
 		}
@@ -40,6 +67,7 @@ func (ns *nodeStorage) Get(c cid.Cid) ([]store.IndexEntry, bool, error) {
 			// so we don't need to loop through IndexEntry to move from
 			// one storage to another?
 			if found {
+				ns.stats.add(0, 1, 0)
 				// Move from persistent to cache
 				for i := range v {
 					_, err := ns.primary.Put(c, v[i])
@@ -49,8 +77,11 @@ func (ns *nodeStorage) Get(c cid.Cid) ([]store.IndexEntry, bool, error) {
 						break
 					}
 				}
+			} else {
+				ns.stats.add(0, 0, 1)
 			}
 		}
+
 		return v, found, err
 	}
 
