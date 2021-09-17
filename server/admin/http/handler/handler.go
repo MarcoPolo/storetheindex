@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"errors"
 	"net/http"
 
@@ -16,14 +17,16 @@ import (
 var log = logging.Logger("admin_handler")
 
 type AdminHandler struct {
+	ctx      context.Context
 	indexer  indexer.Interface
 	ingester ingestion.Ingester
 }
 
-func New(indexer indexer.Interface, ingester ingestion.Ingester) *AdminHandler {
+func New(ctx context.Context, indexer indexer.Interface, ingester ingestion.Ingester) *AdminHandler {
 	return &AdminHandler{
 		indexer:  indexer,
 		ingester: ingester,
+		ctx:      ctx,
 	}
 }
 

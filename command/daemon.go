@@ -201,7 +201,7 @@ func daemonCommand(cctx *cli.Context) error {
 	if err != nil {
 		return err
 	}
-	adminSvr, err := httpadminserver.New(adminAddr.String(), indexerCore, ingester)
+	adminSvr, err := httpadminserver.New(cctx.Context, adminAddr.String(), indexerCore, ingester)
 	if err != nil {
 		return err
 	}
@@ -230,7 +230,7 @@ func daemonCommand(cctx *cli.Context) error {
 
 	log.Infow("Shutting down daemon")
 
-	ctx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
+	ctx, cancel := context.WithTimeout(cctx.Context, shutdownTimeout)
 	defer cancel()
 
 	go func() {

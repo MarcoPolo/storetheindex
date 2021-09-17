@@ -23,7 +23,7 @@ func (h *AdminHandler) Subscribe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	log.Infow("Subscribing to provider", "provider", m)
-	err = h.ingester.Subscribe(r.Context(), miner)
+	err = h.ingester.Subscribe(h.ctx, miner)
 	if err != nil {
 		log.Errorw("error subscribing to provider", "err", err)
 		writeError(w, http.StatusInternalServerError, err)
@@ -47,7 +47,7 @@ func (h *AdminHandler) Unsubscribe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	log.Infow("Unsubscribing to provider", "provider", m)
-	err = h.ingester.Unsubscribe(r.Context(), miner)
+	err = h.ingester.Unsubscribe(h.ctx, miner)
 	if err != nil {
 		log.Errorw("error unssubscribing to provider", "err", err)
 		writeError(w, http.StatusInternalServerError, err)
@@ -76,7 +76,7 @@ func (h *AdminHandler) Sync(w http.ResponseWriter, r *http.Request) {
 	// We can include an ingestion API to check the latest sync for
 	// a provider in the indexer. This would show if the indexer
 	// has finally synced or not.
-	_, err = h.ingester.Sync(r.Context(), miner)
+	_, err = h.ingester.Sync(h.ctx, miner)
 	if err != nil {
 		log.Errorw("error syncing with provider", "err", err)
 		writeError(w, http.StatusInternalServerError, err)
