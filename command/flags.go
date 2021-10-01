@@ -43,6 +43,13 @@ var daemonFlags = []cli.Flag{
 		Value:    false,
 		Required: false,
 	},
+	&cli.StringFlag{
+		Name:     "log-level",
+		Usage:    "Set the log level",
+		EnvVars:  []string{"GOLOG_LOG_LEVEL"},
+		Value:    "info",
+		Required: false,
+	},
 }
 
 var findFlags = []cli.Flag{

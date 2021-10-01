@@ -49,12 +49,15 @@ var DaemonCmd = &cli.Command{
 }
 
 func daemonCommand(cctx *cli.Context) error {
+	err := logging.SetLogLevel("*", cctx.String("log-level"))
+	if err != nil {
+		return err
+	}
+
 	cfg, err := config.Load("")
 	if err != nil {
 		if err == config.ErrNotInitialized {
-			fmt.Fprintln(os.Stderr, "storetheindex is not initialized")
-			fmt.Fprintln(os.Stderr, "To initialize, run the command: ./storetheindex init")
-			os.Exit(1)
+			return errors.New("storetheindex is not initialized\nTo initialize, run the 'init' command")
 		}
 		return fmt.Errorf("cannot load config file: %w", err)
 	}

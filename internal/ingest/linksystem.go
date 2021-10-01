@@ -2,7 +2,6 @@ package ingest
 
 import (
 	"bytes"
-	"encoding/base64"
 	"io"
 	"net/http"
 
@@ -17,7 +16,8 @@ import (
 	"github.com/ipld/go-ipld-prime/codec/dagjson"
 	cidlink "github.com/ipld/go-ipld-prime/linking/cid"
 	"github.com/ipld/go-ipld-prime/node/basicnode"
-	peer "github.com/libp2p/go-libp2p-core/peer"
+	"github.com/libp2p/go-libp2p-core/peer"
+	"github.com/multiformats/go-multihash"
 )
 
 func dsKey(k string) datastore.Key {
@@ -49,64 +49,67 @@ func mkLinkSystem(ds datastore.Batching, reg *registry.Registry) ipld.LinkSystem
 				log.Errorf("Error decoding IPLD node in linksystem: %s", err)
 				return err
 			}
-			// If it is an advertisement.
-			if isAdvertisement(n) {
-				// Verify if the signature is correct.
-				// And the advertisement valid.
-				ad, err := verifyAdvertisement(n)
+
+			// If it is not an advertisement.
+			if !isAdvertisement(n) {
+				log.Debug("Persisting an IPLD node not of type advertisement")
+				// Any other type of node (like entries) are stored right away.
+				return ds.Put(dsKey(c.String()), origBuf)
+			}
+
+			log.Infow("Received advertisement", "cid", c.String())
+
+			// Verify if the signature is correct.
+			// And the advertisement valid.
+			ad, err := verifyAdvertisement(n)
+			if err != nil {
+				log.Errorf("Error verifying if node is of type advertisement: %s", err)
+				return err
+			}
+
+			addrs, err := schema.IpldToGoStrings(ad.FieldAddresses())
+			if err != nil {
+				log.Error("Could not get addresses from advertisement")
+				return syserr.New(err, http.StatusBadRequest)
+			}
+
+			// If addresses are included with the advertisement
+			if len(addrs) != 0 {
+				provider, err := ad.FieldProvider().AsString()
 				if err != nil {
-					log.Errorf("Error verifying if node is of type advertisement: %s", err)
+					log.Errorf("Could not get provider from advertisement: %s", err)
 					return err
 				}
 
-				addrs, err := schema.IpldToGoStrings(ad.FieldAddresses())
+				provID, err := peer.Decode(provider)
 				if err != nil {
-					log.Error("Could not get addresses from advertisement")
+					log.Errorf("Could not decode advertisement provider ID: %s", err)
 					return syserr.New(err, http.StatusBadRequest)
 				}
 
-				// If addresses are included with the advertisement
-				if len(addrs) != 0 {
-					provider, err := ad.FieldProvider().AsString()
-					if err != nil {
-						log.Errorf("Could not get provider from advertisement: %s", err)
-						return err
-					}
-
-					provID, err := peer.Decode(provider)
-					if err != nil {
-						log.Errorf("Could not decode advertisement provider ID: %s", err)
-						return syserr.New(err, http.StatusBadRequest)
-					}
-
-					err = reg.RegisterOrUpdate(provID, addrs)
-					if err != nil {
-						return err
-					}
-				}
-
-				// Store entries link into the reverse map
-				// so we have a way of identifying what advertisementID
-				// announced these entries when we come across the link
-				log.Debug("Setting reverse map for entries after receiving advertisement")
-				elnk, err := ad.FieldEntries().AsLink()
+				err = reg.RegisterOrUpdate(provID, addrs)
 				if err != nil {
-
-					log.Errorf("Error getting link for entries from advertisement: %s", err)
 					return err
 				}
-				err = putCidToAdMapping(ds, elnk, c)
-				if err != nil {
-					log.Errorf("Error storing reverse map for entries in datastore: %s", err)
-					return err
-				}
-
-				log.Debug("Persisting new advertisement")
-				// Persist the advertisement
-				return ds.Put(dsKey(c.String()), origBuf)
 			}
-			log.Debug("Persisting an IPLD node not of type advertisement")
-			// Any other type of node (like entries) are stored right away.
+
+			// Store entries link into the reverse map
+			// so we have a way of identifying what advertisementID
+			// announced these entries when we come across the link
+			log.Debug("Setting reverse map for entries after receiving advertisement")
+			elnk, err := ad.FieldEntries().AsLink()
+			if err != nil {
+				log.Errorf("Error getting link for entries from advertisement: %s", err)
+				return err
+			}
+			err = putCidToAdMapping(ds, elnk, c)
+			if err != nil {
+				log.Errorf("Error storing reverse map for entries in datastore: %s", err)
+				return err
+			}
+
+			log.Debug("Persisting new advertisement")
+			// Persist the advertisement
 			return ds.Put(dsKey(c.String()), origBuf)
 		}, nil
 	}
@@ -145,12 +148,13 @@ func verifyAdvertisement(n ipld.Node) (schema.Advertisement, error) {
 // to process them and ingest into the indexer core.
 func (i *legIngester) storageHook() graphsync.OnIncomingBlockHook {
 	return func(p peer.ID, responseData graphsync.ResponseData, blockData graphsync.BlockData, hookActions graphsync.IncomingBlockHookActions) {
-		log.Debug("hook - Triggering hooko after a block has been stored")
+		log.Info("hook - Triggering hook after a block has been stored")
 		// Get cid of the node received.
 		c := blockData.Link().(cidlink.Link).Cid
+		cidStr := c.String()
 
 		// Get entries node from datastore.
-		val, err := i.ds.Get(dsKey(c.String()))
+		val, err := i.ds.Get(dsKey(cidStr))
 		if err != nil {
 			log.Errorf("Error while fetching the node from datastore: %s", err)
 			return
@@ -163,45 +167,47 @@ func (i *legIngester) storageHook() graphsync.OnIncomingBlockHook {
 			return
 		}
 
-		// If it is not an advertisement, is the list of Cids.
-		// Let's ingest it!
-		if !isAdvertisement(nentries) {
-			// Get the advertisement ID corresponding to the link.
-			// From the reverse map.
-			log.Debug("hook - Not an advertisement, let's start ingesting entries")
-			val, err := i.ds.Get(dsKey(admapPrefix + c.String()))
-			if err != nil {
-				log.Errorf("Error while fetching the advertisementID for entries map: %s", err)
-			}
-			adCid, err := cid.Cast(val)
-			if err != nil {
-				log.Errorf("Error casting Cid for advertisement: %s", err)
-			}
+		// If this is an advertisement, then ignore
+		if isAdvertisement(nentries) {
+			log.Infow("hook - Received advertisement", "cid", cidStr)
+			return
+		}
+		// This is not an advertisement.  It is the list of CIDs, so ingest it!
+		log.Info("hook - Not an advertisement, start ingesting entries")
 
-			log.Debug("hook - Processing entries from an advertisement")
-			// Process entries and ingest them.
-			err = i.processEntries(adCid, p, nentries)
-			if err != nil {
-				log.Errorf("Error processing entries for advertisement: %s", err)
+		// Get the advertisement ID corresponding to the link.
+		// From the reverse map.
+		val, err = i.ds.Get(dsKey(admapPrefix + cidStr))
+		if err != nil {
+			log.Errorf("Error while fetching the advertisementID for entries map: %s", err)
+		}
+		adCid, err := cid.Cast(val)
+		if err != nil {
+			log.Errorf("Error casting Cid for advertisement: %s", err)
+		}
 
-			}
+		log.Info("hook - Processing entries from an advertisement")
+		// Process entries and ingest them.
+		err = i.processEntries(adCid, p, nentries)
+		if err != nil {
+			log.Errorf("Error processing entries for advertisement: %s", err)
+		}
 
-			// We can remove the datastore entry between chunk and CID once
-			// we've process it.
-			err = deleteCidToAdMapping(i.ds, c)
-			if err != nil {
-				log.Errorf("Error deleting cid-advertisement mapping for entries: %s", err)
-			}
+		// We can remove the datastore entry between chunk and CID once
+		// we've process it.
+		err = deleteCidToAdMapping(i.ds, c)
+		if err != nil {
+			log.Errorf("Error deleting cid-advertisement mapping for entries: %s", err)
+		}
 
-			log.Debug("hook - Removing entries from datastore to prevent entries from being stored redundantly")
-			// When we are finished processing the index we can remove
-			// it from the datastore (we don't want redundant information
-			// in several datastores).
-			err = i.ds.Delete(dsKey(c.String()))
-			if err != nil {
-				log.Errorf("Error deleting index from datastore: %s", err)
-				return
-			}
+		log.Debug("hook - Removing entries from datastore to prevent entries from being stored redundantly")
+		// When we are finished processing the index we can remove
+		// it from the datastore (we don't want redundant information
+		// in several datastores).
+		err = i.ds.Delete(dsKey(cidStr))
+		if err != nil {
+			log.Errorf("Error deleting index from datastore: %s", err)
+			return
 		}
 	}
 }
@@ -248,6 +254,8 @@ func (i *legIngester) processEntries(adCid cid.Cid, p peer.ID, nentries ipld.Nod
 	}
 	nchunk := nb.Build().(schema.EntryChunk)
 	entries := nchunk.FieldEntries()
+	val := indexer.MakeValue(p, 0, metadata)
+
 	// Iterate over all entries and ingest them
 	cit := entries.ListIterator()
 	for !cit.Done() {
@@ -257,7 +265,6 @@ func (i *legIngester) processEntries(adCid cid.Cid, p peer.ID, nentries ipld.Nod
 			log.Errorf("Error decoding an entry from the ingestion list: %s", err)
 			return err
 		}
-		val := indexer.MakeValue(p, 0, metadata)
 		if isRm {
 			// TODO: Remove will change once we change the syncing process
 			// because we may not receive the list of CIDs to remove and we'll
@@ -274,7 +281,7 @@ func (i *legIngester) processEntries(adCid cid.Cid, p peer.ID, nentries ipld.Nod
 				return err
 			}
 		}
-		log.Debugw("Processed entry", "multihash", base64.StdEncoding.EncodeToString(h))
+		log.Debugw("Processed entry", "multihash", multihash.Multihash(h).B58String())
 	}
 
 	// If there is a next link, update the mapping so we know the AdID
